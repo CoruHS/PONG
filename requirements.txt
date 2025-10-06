@@ -1,10 +1,19 @@
-pip install -U \
-  "torch>=2.1" \
-  "stable-baselines3>=2.3.0" \
-  gymnasium \
-  ale-py \
-  numpy \
-  pygame \
-  opencv-python \
-  tensorboard \
-  "autorom[accept-rom-license]"
+# Pull PyTorch 2.9.0 Final RC (CUDA 13.0) from the test channel
+--extra-index-url https://download.pytorch.org/whl/test/cu130
+
+# Core DL stack (CUDA 13.0 RC)
+torch==2.9.0
+
+# RL + env stack
+stable-baselines3>=2.4.0
+gymnasium>=1.2.0
+ale-py>=0.11.0
+numpy>=1.26
+opencv-python>=4.8.0
+pygame>=2.6.0
+
+# Atari ROM installer (agree to license)
+autorom[accept-rom-license]>=0.6.1
+
+# Logging (used by your script’s tensorboard_log)
+tensorboard>=2.13
