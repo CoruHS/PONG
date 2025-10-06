@@ -1,0 +1,10 @@
+pip install -U \
+  "torch>=2.1" \
+  "stable-baselines3>=2.3.0" \
+  gymnasium \
+  ale-py \
+  numpy \
+  pygame \
+  opencv-python \
+  tensorboard \
+  "autorom[accept-rom-license]"
