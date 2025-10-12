@@ -1,19 +1,32 @@
-# Pull PyTorch 2.9.0 Final RC (CUDA 13.0) from the test channel
---extra-index-url https://download.pytorch.org/whl/test/cu130
+# =========================
+# RL Pong stack (Python 3.12)
+# =========================
 
-# Core DL stack (CUDA 13.0 RC)
+# ---- PyTorch (choose ONE of these) ----
+# CUDA 13.0 RC build (requires NVIDIA + CUDA 13 driver/runtime)
+--extra-index-url https://download.pytorch.org/whl/test/cu130
+# torch==2.9.0
+
+# CPU-only (comment the two lines above, and use this line instead):
 torch==2.9.0
 
-# RL + env stack
-stable-baselines3>=2.4.0
-gymnasium>=1.2.0
-ale-py>=0.11.0
-numpy>=1.26
-opencv-python>=4.8.0
-pygame>=2.6.0
+# ---- RL + Multi-agent Atari ----
+stable-baselines3==2.4.0
+gymnasium==1.0.0
+pettingzoo[atari]==1.25.0
+supersuit==3.9.3
 
-# Atari ROM installer (agree to license)
+# Optional single-agent ALE (harmless to include; useful for ALE envs/tools)
+ale-py==0.11.0
+
+# ---- Core libs & UI ----
+# Numpy kept <2.4 to avoid edge-case wheels; plays well with torch 2.9
+numpy>=1.26,<2.4
+opencv-python>=4.8
+pygame==2.6.1
+
+# ---- ROM installer (non-interactive license) ----
 autorom[accept-rom-license]>=0.6.1
 
-# Logging (used by your script’s tensorboard_log)
+# ---- Logging ----
 tensorboard>=2.13
