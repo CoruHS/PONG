@@ -1,13 +1,14 @@
 """
-Self-play Double DQN on PettingZoo Pong (two learners trained simultaneously).
+Self-play DQN on PettingZoo Pong (two learners trained simultaneously) + reward shaping.
 
 What this script does
 - Builds pong_v3 with SuperSuit preprocessing (grayscale→84x84→frame-stack=4→uint8)
-- Creates two QNetworks (left/right) + two Learners (Double DQN) + two ReplayBuffers
+- Creates two QNetworks (left/right) + two Learners (DQN target) + two ReplayBuffers
 - Runs self-play; at each step, stores transitions for BOTH players and trains them
 - Prints a per-episode summary (who reached 21 first, epsilon, scores)
 - Prints a one-line training summary every 10k env steps
-- **Saves checkpoints** for both agents periodically and at the end
+- Saves checkpoints for both agents periodically and at the end
+- NEW: Optional reward shaping (intercept potential, decayed contact bonus, small step cost, reachable-miss penalty)
 
 Usage
     pip install "pettingzoo[atari]" "autorom[accept-rom-license]" supersuit torch imageio
@@ -18,13 +19,14 @@ Notes
 - Observations from env are HWC (84,84,4) uint8; we convert to CHW (4,84,84) for networks/replay.
 - Replay buffers are independent per agent; learners update on their own samples.
 - Target nets sync every --target_update steps.
+- Reward shaping can be toggled with --use_shaping 0/1 and tuned via flags.
 """
 from __future__ import annotations
 import argparse
 import os
 import time
 from collections import deque
-from typing import Dict, Tuple
+from typing import Dict
 
 import numpy as np
 import torch
@@ -35,13 +37,16 @@ from learner import Learner
 from policy import EpsilonScheduler, select_action_eps_greedy
 from replay import ReplayBuffer
 
+# NEW: shaping imports
+from shaping import PongShaper, ShapingCfg
+
 
 def set_seed_everywhere(seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    # make CuDNN deterministic(ish)
+    # deterministic off, benchmark on for speed on conv nets
     torch.backends.cudnn.deterministic = False
     torch.backends.cudnn.benchmark = True
 
@@ -82,7 +87,7 @@ def save_checkpoint(save_dir: str, side: str, learner: Learner, global_step: int
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--total_steps", type=int, default=1_000_000)
+    parser.add_argument("--total_steps", type=int, default=2_000_000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
 
@@ -93,14 +98,14 @@ def main():
     parser.add_argument("--train_freq", type=int, default=4)
     parser.add_argument("--target_update", type=int, default=10_000)
 
-    # Optimization + DDQN
+    # Optimization
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
 
-    # Exploration schedule (shared for both agents)
+    # Exploration schedule (shared)
     parser.add_argument("--eps_start", type=float, default=1.0)
-    parser.add_argument("--eps_final", type=float, default=0.05)
-    parser.add_argument("--eps_decay", type=int, default=1_000_000)
+    parser.add_argument("--eps_final", type=float, default=0.01)
+    parser.add_argument("--eps_decay", type=int, default=1_400_000)
 
     # Rendering
     parser.add_argument("--render_mode", type=str, default="rgb_array", choices=["none", "rgb_array", "human"],
@@ -108,8 +113,17 @@ def main():
 
     # Checkpointing
     parser.add_argument("--save_dir", type=str, default="checkpoints")
-    parser.add_argument("--save_every", type=int, default=10_000, help="Save every N env steps; 0 disables periodic saves")
-    parser.add_argument("--save_on_episode", type=int, default=1, help="Also save at the end of each episode (0/1)")
+    parser.add_argument("--save_every", type=int, default=0, help="Save every N env steps; 0 disables periodic saves")
+    parser.add_argument("--save_on_episode", type=int, default=0, help="Also save at the end of each episode (0/1)")
+
+    # NEW: Reward shaping (toggle + hyperparameters)
+    parser.add_argument("--use_shaping", type=int, default=1, help="Enable reward shaping: 1=yes, 0=no")
+    parser.add_argument("--shape_alpha", type=float, default=0.10, help="Intercept potential weight")
+    parser.add_argument("--shape_beta_contact", type=float, default=0.05, help="Contact bonus weight")
+    parser.add_argument("--shape_lambda", type=float, default=0.90, help="Per-rally decay (0..1)")
+    parser.add_argument("--shape_step_cost", type=float, default=1e-4, help="Per-step time cost")
+    parser.add_argument("--shape_reach_margin", type=float, default=10.0, help="Reachable miss threshold (px)")
+    parser.add_argument("--shape_miss_penalty", type=float, default=0.40, help="Penalty on reachable miss")
 
     args = parser.parse_args()
 
@@ -158,16 +172,29 @@ def main():
     # Prepare initial CHW views
     obs_chw = {a: hwc_to_chw_uint8(obs[a]) for a in agents}
 
+    # NEW: instantiate shaper
+    shaper = None
+    if args.use_shaping:
+        cfg = ShapingCfg(
+            alpha_intercept=args.shape_alpha,
+            beta_contact=args.shape_beta_contact,
+            lambda_decay=args.shape_lambda,
+            step_cost=args.shape_step_cost,
+            reachable_margin_px=args.shape_reach_margin,
+            miss_penalty=args.shape_miss_penalty,
+        )
+        shaper = PongShaper(cfg)
+
+    @torch.no_grad()
+    def q_from(net: torch.nn.Module, x_np: np.ndarray) -> np.ndarray:
+        x = torch.from_numpy(x_np).to(device)
+        q = net(x).detach().cpu().numpy()
+        return q
+
     while global_step < args.total_steps:
         epsilon = eps_sched.value(global_step)
 
         # --- Select actions for both players (ε-greedy over online nets) ---
-        @torch.no_grad()
-        def q_from(net: torch.nn.Module, x_np: np.ndarray) -> np.ndarray:
-            x = torch.from_numpy(x_np).to(device)
-            q = net(x).detach().cpu().numpy()
-            return q
-
         a_left = select_action_eps_greedy(
             obs_chw[left_name], n_actions, epsilon, rng,
             q_values_fn=lambda x: q_from(left_learner.q_online, x)
@@ -185,13 +212,38 @@ def main():
         # --- Step env ---
         next_obs, rewards, terminations, truncations, infos = env.step(actions)
 
-        # Update scoreboards and returns (Pong gives +1 to scorer, -1 to the other)
-        left_return += float(rewards.get(left_name, 0.0))
-        right_return += float(rewards.get(right_name, 0.0))
-        if rewards.get(left_name, 0.0) > 0:
+        # Update scoreboards and returns using ENV rewards only (±1)
+        r_left_env = float(rewards.get(left_name, 0.0))
+        r_right_env = float(rewards.get(right_name, 0.0))
+        left_return += r_left_env
+        right_return += r_right_env
+        if r_left_env > 0:
             left_points += 1
-        if rewards.get(right_name, 0.0) > 0:
+        if r_right_env > 0:
             right_points += 1
+
+        # --- Reward shaping additions (uses prev and next frames) ---
+        if shaper is not None:
+            # choose any agent's frames for shaping vision (Pong observations are identical across agents)
+            # prev frames always available for both; next frames may drop at terminal—fallback to zeros.
+            if left_name in next_obs:
+                next_for_shape = hwc_to_chw_uint8(next_obs[left_name])
+            elif right_name in next_obs:
+                next_for_shape = hwc_to_chw_uint8(next_obs[right_name])
+            else:
+                next_for_shape = np.zeros((4, 84, 84), dtype=np.uint8)
+
+            # Use left's prev frames for shaping; identical to right's in Pong
+            r_total_L, r_total_R, _dbg = shaper.step(
+                prev_obs_chw[left_name],
+                next_for_shape,
+                r_left_env, r_right_env, args.gamma
+            )
+            r_used_left = r_total_L
+            r_used_right = r_total_R
+        else:
+            r_used_left = r_left_env
+            r_used_right = r_right_env
 
         # --- Build next states (handle agent removal at episode end) ---
         def get_next_chw(name: str) -> np.ndarray:
@@ -204,9 +256,9 @@ def main():
         done_left = bool(terminations.get(left_name, False) or truncations.get(left_name, False))
         done_right = bool(terminations.get(right_name, False) or truncations.get(right_name, False))
 
-        # --- Store transitions ---
-        left_buffer.add(prev_obs_chw[left_name], a_left, float(rewards.get(left_name, 0.0)), next_obs_chw_left, done_left)
-        right_buffer.add(prev_obs_chw[right_name], a_right, float(rewards.get(right_name, 0.0)), next_obs_chw_right, done_right)
+        # --- Store transitions (use shaped rewards if enabled) ---
+        left_buffer.add(prev_obs_chw[left_name], a_left, r_used_left, next_obs_chw_left, done_left)
+        right_buffer.add(prev_obs_chw[right_name], a_right, r_used_right, next_obs_chw_right, done_right)
 
         # --- Learn (both agents) ---
         if global_step >= args.learn_start and global_step % args.train_freq == 0:
@@ -281,7 +333,6 @@ def main():
 
         # Not done: carry forward next obs
         obs = next_obs
-        # Env may drop finished agents at the very last step before episode end, but we handle done_episode above.
         obs_chw = {a: hwc_to_chw_uint8(obs[a]) for a in env.agents}
 
     # Final save
