@@ -68,6 +68,10 @@ To **watch** self‑play with a window:
 python main.py --total_steps 200000 --render_mode human
 ```
 
+```bash
+click run or python main.py
+```
+
 > Tip: `--render_mode human` opens an interactive window and is slower. For speed, use `--render_mode none` or `rgb_array`.
 
 ### 3) Checkpoints
