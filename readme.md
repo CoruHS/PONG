@@ -158,8 +158,8 @@ Use `eval_selfplay.py` to pit checkpoints against each other:
 
 ```bash
 python eval_selfplay.py \
-  --left_ckpt checkpoints/left_step2000000.pt \
-  --right_ckpt checkpoints/right_step2000000.pt \
+  --left_ckpt checkpoints/left_step1000000.pt \
+  --right_ckpt checkpoints/right_step1000000.pt \
   --episodes 10 \
   --swap_sides 1 \
   --render rgb_array \
