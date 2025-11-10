@@ -125,7 +125,7 @@ parser.add_argument("--shape_miss_penalty", type=float, default=0.40)
 
 ### Memory note
 
-* `replay_capacity=100_000` with 84×84×4 stacked frames (uint8) stores **both** current and next states per transition for **two agents** ⇒ roughly **~11 GB** total RAM.
+* `replay_capacity=100_000` with 84×84×4 stacked frames (uint8) stores **both** current and next states per transition for **two agents** ⇒ roughly **~11 GB** total RAM. Or use 50_000 to use 5.8 GB of ram(would be worse using less replay).
 * Reduce memory by lowering `--replay_capacity` (e.g., `50_000`), or run fewer workers.
 
 ---
